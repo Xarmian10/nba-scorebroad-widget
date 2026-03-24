@@ -107,14 +107,27 @@ class PollWorker(QObject):
                         if game_clock:
                             game.game_clock = game_clock
                     if player_team:
-                        if not game.is_live and cache_key in self._player_stats_cache:
-                            player_stats = self._player_stats_cache[cache_key]
-                        elif now - self._last_player_stats_fetch >= 10.0:
-                            player_stats = service.fetch_player_stats(game_id, player_team, is_live=game.is_live)
+                        tricodes = [t.strip().upper() for t in player_team.split(",") if t.strip()]
+                        should_fetch = now - self._last_player_stats_fetch >= 10.0
+                        all_stats: list[dict] = []
+                        fetched_any = False
+                        for tc in tricodes:
+                            tc_cache_key = f"{game_id}:{tc}"
+                            if not game.is_live and tc_cache_key in self._player_stats_cache:
+                                tc_stats = self._player_stats_cache[tc_cache_key]
+                            elif should_fetch:
+                                tc_stats = service.fetch_player_stats(game_id, tc, is_live=game.is_live)
+                                fetched_any = True
+                                if tc_stats:
+                                    self._player_stats_cache[tc_cache_key] = tc_stats
+                            else:
+                                tc_stats = self._player_stats_cache.get(tc_cache_key, [])
+                            for s in tc_stats:
+                                s["team"] = tc
+                            all_stats.extend(tc_stats)
+                        if fetched_any:
                             self._last_player_stats_fetch = now
-                            self._last_player_stats = player_stats
-                            if player_stats:
-                                self._player_stats_cache[cache_key] = player_stats
+                        player_stats = all_stats
             return seq, snapshot, shot_clock, game_id, timeout_team, player_stats, player_team
         except Exception as exc:  # noqa: BLE001
             log.warning("Poll worker failed attempt: %s", exc)

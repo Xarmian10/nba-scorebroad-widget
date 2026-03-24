@@ -122,32 +122,7 @@ class ScoreboardService:
         try:
             team_tricode = team_tricode.upper()
             if is_live:
-                bs = BoxScore(game_id=game_id, proxy=self.proxy, headers=self.headers, timeout=self.timeout)
-                data = bs.nba_response.get_dict()
-                game = data.get("game", {}) if isinstance(data, dict) else {}
-                team = None
-                for key in ("homeTeam", "awayTeam"):
-                    candidate = game.get(key, {})
-                    if candidate.get("teamTricode", "").upper() == team_tricode:
-                        team = candidate
-                        break
-                if not team:
-                    return []
-                players = team.get("players", []) or []
-                results: list[dict] = []
-                for player in players:
-                    stats = player.get("statistics") or {}
-                    name = player.get("name") or f"{player.get('firstName','')} {player.get('familyName','')}".strip()
-                    results.append(
-                        {
-                            "name": name or player.get("nameI", ""),
-                            "points": stats.get("points", 0) or 0,
-                            "assists": stats.get("assists", 0) or 0,
-                            "rebounds": stats.get("reboundsTotal", 0) or 0,
-                        }
-                    )
-                results.sort(key=lambda item: (item["points"], item["assists"], item["rebounds"]), reverse=True)
-                return results
+                return self._fetch_live_player_stats(game_id, team_tricode)
 
             results = self._fetch_traditional_stats_v3(game_id, team_tricode)
             if results:
@@ -155,36 +130,41 @@ class ScoreboardService:
             results = self._fetch_traditional_stats_v2(game_id, team_tricode)
             if results:
                 return results
-            # Fallback to live boxscore for ended games if stats endpoints are empty
-            bs = BoxScore(game_id=game_id, proxy=self.proxy, headers=self.headers, timeout=self.timeout)
-            data = bs.nba_response.get_dict()
-            game = data.get("game", {}) if isinstance(data, dict) else {}
-            team = None
-            for key in ("homeTeam", "awayTeam"):
-                candidate = game.get(key, {})
-                if candidate.get("teamTricode", "").upper() == team_tricode:
-                    team = candidate
-                    break
-            if not team:
-                return []
-            players = team.get("players", []) or []
-            results = []
-            for player in players:
-                stats = player.get("statistics") or {}
-                name = player.get("name") or f"{player.get('firstName','')} {player.get('familyName','')}".strip()
-                results.append(
-                    {
-                        "name": name or player.get("nameI", ""),
-                        "points": stats.get("points", 0) or 0,
-                        "assists": stats.get("assists", 0) or 0,
-                        "rebounds": stats.get("reboundsTotal", 0) or 0,
-                    }
-                )
-            results.sort(key=lambda item: (item["points"], item["assists"], item["rebounds"]), reverse=True)
-            return results
+            return self._fetch_live_player_stats(game_id, team_tricode)
         except Exception as exc:  # noqa: BLE001
             log.debug("Fetch player stats failed: %s", exc)
             return []
+
+    def _fetch_live_player_stats(self, game_id: str, team_tricode: str) -> list[dict]:
+        bs = BoxScore(game_id=game_id, proxy=self.proxy, headers=self.headers, timeout=self.timeout)
+        data = bs.nba_response.get_dict()
+        game = data.get("game", {}) if isinstance(data, dict) else {}
+        team = None
+        for key in ("homeTeam", "awayTeam"):
+            candidate = game.get(key, {})
+            if candidate.get("teamTricode", "").upper() == team_tricode:
+                team = candidate
+                break
+        if not team:
+            return []
+        team_id = team.get("teamId", 0)
+        players = team.get("players", []) or []
+        results: list[dict] = []
+        for player in players:
+            stats = player.get("statistics") or {}
+            name = player.get("name") or f"{player.get('firstName','')} {player.get('familyName','')}".strip()
+            results.append({
+                "name": name or player.get("nameI", ""),
+                "personId": player.get("personId", 0),
+                "teamId": team_id,
+                "jerseyNum": str(player.get("jerseyNum", "")),
+                "position": player.get("position", ""),
+                "points": stats.get("points", 0) or 0,
+                "assists": stats.get("assists", 0) or 0,
+                "rebounds": stats.get("reboundsTotal", 0) or 0,
+            })
+        results.sort(key=lambda item: (item["points"], item["assists"], item["rebounds"]), reverse=True)
+        return results
 
     def _fetch_traditional_stats_v3(self, game_id: str, team_tricode: str) -> list[dict]:
         try:
@@ -206,14 +186,16 @@ class ScoreboardService:
                 if row[team_idx] != team_tricode:
                     continue
                 name = row[name_idx] or f"{row[first_idx]} {row[last_idx]}".strip()
-                results.append(
-                    {
-                        "name": name,
-                        "points": row[idx.get("points")] if idx.get("points") is not None else 0,
-                        "assists": row[idx.get("assists")] if idx.get("assists") is not None else 0,
-                        "rebounds": row[idx.get("reboundsTotal")] if idx.get("reboundsTotal") is not None else 0,
-                    }
-                )
+                results.append({
+                    "name": name,
+                    "personId": row[idx["personId"]] if "personId" in idx else 0,
+                    "teamId": row[idx["teamId"]] if "teamId" in idx else 0,
+                    "jerseyNum": str(row[idx["jerseyNum"]]) if "jerseyNum" in idx else "",
+                    "position": row[idx["position"]] if "position" in idx else "",
+                    "points": row[idx["points"]] if "points" in idx else 0,
+                    "assists": row[idx["assists"]] if "assists" in idx else 0,
+                    "rebounds": row[idx["reboundsTotal"]] if "reboundsTotal" in idx else 0,
+                })
             results.sort(key=lambda item: (item["points"], item["assists"], item["rebounds"]), reverse=True)
             return results
         except Exception as exc:  # noqa: BLE001
@@ -237,18 +219,98 @@ class ScoreboardService:
             for row in data_rows:
                 if row[team_idx] != team_tricode:
                     continue
-                results.append(
-                    {
-                        "name": row[name_idx],
-                        "points": row[idx.get("PTS")] if idx.get("PTS") is not None else 0,
-                        "assists": row[idx.get("AST")] if idx.get("AST") is not None else 0,
-                        "rebounds": row[idx.get("REB")] if idx.get("REB") is not None else 0,
-                    }
-                )
+                results.append({
+                    "name": row[name_idx],
+                    "personId": row[idx["PLAYER_ID"]] if "PLAYER_ID" in idx else 0,
+                    "teamId": row[idx["TEAM_ID"]] if "TEAM_ID" in idx else 0,
+                    "jerseyNum": "",
+                    "position": row[idx.get("START_POSITION", "")] if "START_POSITION" in idx else "",
+                    "points": row[idx["PTS"]] if "PTS" in idx else 0,
+                    "assists": row[idx["AST"]] if "AST" in idx else 0,
+                    "rebounds": row[idx["REB"]] if "REB" in idx else 0,
+                })
             results.sort(key=lambda item: (item["points"], item["assists"], item["rebounds"]), reverse=True)
             return results
         except Exception as exc:  # noqa: BLE001
             log.debug("Fetch player stats v2 failed: %s", exc)
+            return []
+
+    def fetch_player_advanced_stats(self, game_id: str, player_id: int) -> dict:
+        """Compute advanced stats from the live BoxScore endpoint."""
+        if not game_id or not player_id:
+            return {}
+        try:
+            bs = BoxScore(game_id=game_id, proxy=self.proxy, headers=self.headers, timeout=self.timeout)
+            data = bs.nba_response.get_dict()
+            game = data.get("game", {}) if isinstance(data, dict) else {}
+            for key in ("homeTeam", "awayTeam"):
+                team = game.get(key, {})
+                for player in team.get("players", []):
+                    if player.get("personId") != player_id:
+                        continue
+                    s = player.get("statistics") or {}
+                    pts = s.get("points", 0) or 0
+                    fga = s.get("fieldGoalsAttempted", 0) or 0
+                    fgm = s.get("fieldGoalsMade", 0) or 0
+                    fta = s.get("freeThrowsAttempted", 0) or 0
+                    ftm = s.get("freeThrowsMade", 0) or 0
+                    tpm = s.get("threePointersMade", 0) or 0
+                    tpa = s.get("threePointersAttempted", 0) or 0
+                    denom = 2 * (fga + 0.44 * fta)
+                    ts_pct = pts / denom if denom > 0 else 0.0
+                    efg_pct = (fgm + 0.5 * tpm) / fga if fga > 0 else 0.0
+                    raw_min = s.get("minutes") or s.get("minutesCalculated") or ""
+                    return {
+                        "ts_pct": ts_pct,
+                        "efg_pct": efg_pct,
+                        "fg_pct": s.get("fieldGoalsPercentage", 0) or 0,
+                        "tp_pct": s.get("threePointersPercentage", 0) or 0,
+                        "ft_pct": s.get("freeThrowsPercentage", 0) or 0,
+                        "plus_minus": s.get("plusMinusPoints", 0) or 0,
+                        "minutes": raw_min,
+                        "turnovers": s.get("turnovers", 0) or 0,
+                        "fgm": fgm, "fga": fga,
+                        "tpm": tpm, "tpa": tpa,
+                        "ftm": ftm, "fta": fta,
+                    }
+            return {}
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Fetch advanced stats failed: %s", exc)
+            return {}
+
+    def fetch_shot_chart(self, game_id: str, player_id: int, team_id: int) -> list[dict]:
+        """Extract shot locations from live PlayByPlay, filtered by player.
+
+        Free throws are excluded since they have no location data.
+        """
+        if not game_id or not player_id:
+            return []
+        try:
+            pb = PlayByPlay(game_id=game_id, proxy=self.proxy, headers=self.headers, timeout=self.timeout)
+            actions = pb.actions.get_dict() if pb.actions else []
+            results = []
+            for a in actions:
+                if not a.get("shotResult") or a.get("personId") != player_id:
+                    continue
+                action_type = (a.get("actionType") or "").lower()
+                if "freethrow" in action_type or "free throw" in action_type:
+                    continue
+                x = a.get("xLegacy")
+                y = a.get("yLegacy")
+                if x is None or y is None:
+                    continue
+                results.append({
+                    "x": int(x),
+                    "y": int(y),
+                    "made": a.get("shotResult") == "Made",
+                    "type": a.get("actionType", ""),
+                    "zone": a.get("area", ""),
+                    "distance": a.get("shotDistance", 0),
+                    "action": a.get("subType", ""),
+                })
+            return results
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Fetch shot chart failed: %s", exc)
             return []
 
     def fetch_last_timeout_team(self, game_id: Optional[str], game_clock: str) -> str:

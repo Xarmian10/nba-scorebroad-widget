@@ -75,6 +75,39 @@ TEAM_LOGOS: Dict[str, str] = {
     "WAS": "src/simple_circle_wizards_000.png",
 }
 
+TEAM_NAMES_EN: Dict[str, str] = {
+    "ATL": "Atlanta Hawks",
+    "BOS": "Boston Celtics",
+    "BKN": "Brooklyn Nets",
+    "CHA": "Charlotte Hornets",
+    "CHI": "Chicago Bulls",
+    "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks",
+    "DEN": "Denver Nuggets",
+    "DET": "Detroit Pistons",
+    "GSW": "Golden State Warriors",
+    "HOU": "Houston Rockets",
+    "IND": "Indiana Pacers",
+    "LAC": "LA Clippers",
+    "LAL": "Los Angeles Lakers",
+    "MEM": "Memphis Grizzlies",
+    "MIA": "Miami Heat",
+    "MIL": "Milwaukee Bucks",
+    "MIN": "Minnesota Timberwolves",
+    "NOP": "New Orleans Pelicans",
+    "NYK": "New York Knicks",
+    "OKC": "Oklahoma City Thunder",
+    "ORL": "Orlando Magic",
+    "PHI": "Philadelphia 76ers",
+    "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers",
+    "SAC": "Sacramento Kings",
+    "SAS": "San Antonio Spurs",
+    "TOR": "Toronto Raptors",
+    "UTA": "Utah Jazz",
+    "WAS": "Washington Wizards",
+}
+
 TEAM_NAMES_ZH: Dict[str, str] = {
     "ATL": "老鹰",
     "BOS": "凯尔特人",
@@ -108,6 +141,39 @@ TEAM_NAMES_ZH: Dict[str, str] = {
     "WAS": "奇才",
 }
 
+TEAM_FULL_NAMES_ZH: Dict[str, str] = {
+    "ATL": "亚特兰大老鹰",
+    "BOS": "波士顿凯尔特人",
+    "BKN": "布鲁克林篮网",
+    "CHA": "夏洛特黄蜂",
+    "CHI": "芝加哥公牛",
+    "CLE": "克利夫兰骑士",
+    "DAL": "达拉斯独行侠",
+    "DEN": "丹佛掘金",
+    "DET": "底特律活塞",
+    "GSW": "金州勇士",
+    "HOU": "休斯顿火箭",
+    "IND": "印第安纳步行者",
+    "LAC": "洛杉矶快船",
+    "LAL": "洛杉矶湖人",
+    "MEM": "孟菲斯灰熊",
+    "MIA": "迈阿密热火",
+    "MIL": "密尔沃基雄鹿",
+    "MIN": "明尼苏达森林狼",
+    "NOP": "新奥尔良鹈鹕",
+    "NYK": "纽约尼克斯",
+    "OKC": "俄克拉荷马城雷霆",
+    "ORL": "奥兰多魔术",
+    "PHI": "费城76人",
+    "PHX": "菲尼克斯太阳",
+    "POR": "波特兰开拓者",
+    "SAC": "萨克拉门托国王",
+    "SAS": "圣安东尼奥马刺",
+    "TOR": "多伦多猛龙",
+    "UTA": "犹他爵士",
+    "WAS": "华盛顿奇才",
+}
+
 
 def team_color(tricode: str, fallback: str = "#444") -> QColor:
     hex_color = TEAM_COLORS.get(tricode.upper(), fallback)
@@ -129,6 +195,14 @@ def team_display_name(tricode: str, language: str = "en") -> str:
     if language == "zh":
         return TEAM_NAMES_ZH.get(code, code)
     return code
+
+
+def team_full_display_name(tricode: str, language: str = "en") -> str:
+    """Return the full display name (e.g. 'Los Angeles Lakers' or '洛杉矶湖人')."""
+    code = tricode.upper()
+    if language == "zh":
+        return TEAM_FULL_NAMES_ZH.get(code, TEAM_NAMES_ZH.get(code, code))
+    return TEAM_NAMES_EN.get(code, code)
 
 
 

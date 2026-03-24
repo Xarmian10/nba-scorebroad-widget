@@ -6,14 +6,7 @@ from app.ui.scoreboard_widget import ScoreboardWidget
 
 
 class BroadcastScoreboardWidget(ScoreboardWidget):
-    """Broadcast 专用比分控件，布局与主题独立于 dark/light。"""
+    """兼容性别名——所有主题现在共用 ScoreboardWidget 的 ESPN/TNT 布局。"""
 
     def __init__(self, parent: Optional[object] = None) -> None:
         super().__init__(parent)
-        self.set_layout_mode("broadcast")
-
-
-
-
-
-

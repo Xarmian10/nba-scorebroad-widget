@@ -4,4 +4,10 @@ __pycache__/
 .env
 .DS_Store
 Thumbs.db
+.cursor/
+package-lock.json
+dist/
+build/
+
+
 
