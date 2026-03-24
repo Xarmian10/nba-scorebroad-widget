@@ -327,6 +327,8 @@ class PlayerDetailWindow(QWidget):
         self._result_signal.result_ready.connect(self._apply_fetched_data)
         self._ref_window: Optional[QWidget] = None
         self._language: str = "en"
+        self._player_info: dict = {}
+        self._team_tricode: str = ""
 
         self._build_ui()
 
@@ -489,6 +491,8 @@ class PlayerDetailWindow(QWidget):
 
         self._current_person_id = identity_key
         self._language = language
+        self._player_info = player_info
+        self._team_tricode = team_tricode
         tc = team_color(team_tricode)
         self._team_color = tc
         pal = _team_palette_detail(tc)
@@ -593,6 +597,92 @@ class PlayerDetailWindow(QWidget):
         team_id = player_info.get("teamId", 0)
         if person_id:
             self._executor.submit(self._fetch_all, game_id, person_id, team_id, identity_key)
+
+    def set_language(self, language: str) -> None:
+        """Update all language-dependent text and fonts without closing the panel."""
+        if language == self._language:
+            return
+        self._language = language
+        self._update_labels()
+
+    def _update_labels(self) -> None:
+        """Refresh text and font for all language-sensitive labels."""
+        info = self._player_info
+        if not info:
+            return
+        font = self._font
+        is_zh = self._language == "zh"
+        tc = self._team_color
+        pal = _team_palette_detail(tc)
+
+        self._name_label.setStyleSheet(
+            f"color:{_contrast_text(tc)}; font-family:{font}; font-weight:900; "
+            "font-size:18px; background:transparent;"
+        )
+
+        jersey = info.get("jerseyNum", "")
+        pos = info.get("position", "")
+        meta_parts = []
+        if jersey:
+            meta_parts.append(f"#{jersey}")
+        if pos:
+            display_pos = _POS_ZH.get(pos.upper(), pos) if is_zh else pos
+            meta_parts.append(display_pos)
+        team_name = team_full_display_name(self._team_tricode, self._language)
+        if team_name:
+            meta_parts.append(team_name)
+        self._meta_label.setText("  |  ".join(meta_parts))
+        self._meta_label.setStyleSheet(
+            f"color:{pal['txt_sub']}; font-family:{font}; "
+            "font-size:12px; background:transparent;"
+        )
+
+        pts = info.get("points", 0)
+        ast = info.get("assists", 0)
+        reb = info.get("rebounds", 0)
+        if is_zh:
+            self._game_stats_label.setText(f"{pts} 得分   {ast} 助攻   {reb} 篮板")
+        else:
+            self._game_stats_label.setText(f"{pts} PTS   {ast} AST   {reb} REB")
+        self._game_stats_label.setStyleSheet(
+            f"color:{pal['txt']}; font-family:{font}; "
+            "font-size:14px; font-weight:700; background:transparent;"
+        )
+
+        darker = QColor(tc)
+        darker.setRed(max(0, int(darker.red() * 0.6)))
+        darker.setGreen(max(0, int(darker.green() * 0.6)))
+        darker.setBlue(max(0, int(darker.blue() * 0.6)))
+
+        stat_keys = self._stat_keys
+        for i, (label, _, _fmt) in enumerate(stat_keys):
+            self._stat_name_labels[i].setText(label)
+            self._stat_name_labels[i].setStyleSheet(
+                f"color:{_contrast_text(darker)}80; font-family:{font}; "
+                "font-size:8px; font-weight:600; background:transparent;"
+            )
+            self._stat_value_labels[i].setStyleSheet(
+                f"color:{_contrast_text(darker)}; font-family:{font}; "
+                "font-size:14px; font-weight:700; background:transparent;"
+            )
+
+        self._stats_title.setText("高阶数据" if is_zh else "ADVANCED")
+        self._stats_title.setStyleSheet(
+            f"color:{_contrast_text(darker)}60; font-family:{font}; "
+            "font-size:8px; font-weight:700; "
+            "background:transparent; letter-spacing:2px;"
+        )
+
+        darkest = QColor(darker)
+        darkest.setRed(max(0, int(darkest.red() * 0.7)))
+        darkest.setGreen(max(0, int(darkest.green() * 0.7)))
+        darkest.setBlue(max(0, int(darkest.blue() * 0.7)))
+        self._chart_title.setText("投篮图" if is_zh else "SHOT CHART")
+        self._chart_title.setStyleSheet(
+            f"color:{_contrast_text(darkest)}60; font-family:{font}; "
+            "font-size:8px; font-weight:700; "
+            "background:transparent; letter-spacing:2px;"
+        )
 
     def _reposition(self) -> None:
         """Align this panel to the right edge of the reference window."""

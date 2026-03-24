@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import (
@@ -14,6 +15,7 @@ from PySide6.QtCore import (
     QRect,
     QSize,
     QEvent,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QColor, QImage, QPixmap, QRegion
@@ -281,7 +283,7 @@ class ScoreboardWidget(QWidget):
             blocks.append(dot)
         t_lay.addStretch()
 
-        score = QLabel("--")
+        score = QLabel("-")
         score.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         score.setMinimumWidth(48)
 
@@ -301,6 +303,7 @@ class ScoreboardWidget(QWidget):
         bar._team_tricode = ""  # type: ignore[attr-defined]
         bar._score_anim = None  # type: ignore[attr-defined]
         bar._anim_labels: list[QLabel] = []  # type: ignore[attr-defined]
+        bar._cycle_timer = None  # type: ignore[attr-defined]
         bar._layout = lay  # type: ignore[attr-defined]
         return bar
 
@@ -494,21 +497,36 @@ class ScoreboardWidget(QWidget):
             self._update_period_scores(game)
 
     def render_diff(self, diff: GameDiff) -> None:
-        old_away = self._safe_int(self.away_bar._score_label.text())  # type: ignore[attr-defined]
-        old_home = self._safe_int(self.home_bar._score_label.text())  # type: ignore[attr-defined]
+        away_text = self.away_bar._score_label.text()  # type: ignore[attr-defined]
+        home_text = self.home_bar._score_label.text()  # type: ignore[attr-defined]
+        old_away = self._safe_int(away_text)
+        old_home = self._safe_int(home_text)
+        initial_away = away_text == "-"
+        initial_home = home_text == "-"
+
         self.render_game(diff.game)
 
-        home_delta = diff.delta.home_delta
-        away_delta = diff.delta.away_delta
-        if home_delta <= 0 and diff.game.home.score > old_home:
-            home_delta = diff.game.home.score - old_home
-        if away_delta <= 0 and diff.game.away.score > old_away:
-            away_delta = diff.game.away.score - old_away
+        if initial_away and diff.game.away.score > 0:
+            self._animate_score_initial(self.away_bar, diff.game.away.score)
+        elif not initial_away:
+            away_delta = diff.delta.away_delta
+            if away_delta <= 0 and diff.game.away.score > old_away:
+                away_delta = diff.game.away.score - old_away
+            if away_delta > 0:
+                self._animate_score_roll(
+                    self.away_bar, old_away, away_delta, diff.game.away.score
+                )
 
-        if home_delta > 0:
-            self._animate_score_roll(self.home_bar, old_home, home_delta, diff.game.home.score)
-        if away_delta > 0:
-            self._animate_score_roll(self.away_bar, old_away, away_delta, diff.game.away.score)
+        if initial_home and diff.game.home.score > 0:
+            self._animate_score_initial(self.home_bar, diff.game.home.score, delay_ms=120)
+        elif not initial_home:
+            home_delta = diff.delta.home_delta
+            if home_delta <= 0 and diff.game.home.score > old_home:
+                home_delta = diff.game.home.score - old_home
+            if home_delta > 0:
+                self._animate_score_roll(
+                    self.home_bar, old_home, home_delta, diff.game.home.score
+                )
 
     def _reset_display(self) -> None:
         self._set_team(self.away_bar, None, False)
@@ -595,7 +613,7 @@ class ScoreboardWidget(QWidget):
 
         if not team:
             name_lbl.setText("---")
-            score_lbl.setText("--")
+            score_lbl.setText("-")
             bar.setStyleSheet("background:#333; border:none;")
             name_lbl.setStyleSheet(
                 f"color:#666; font-family:{self._font}; font-weight:800; "
@@ -985,6 +1003,10 @@ class ScoreboardWidget(QWidget):
 
     @staticmethod
     def _cleanup_score_anim(bar: QFrame) -> None:
+        cycle_timer = getattr(bar, "_cycle_timer", None)
+        if cycle_timer is not None:
+            cycle_timer.stop()
+            bar._cycle_timer = None  # type: ignore[attr-defined]
         anim = getattr(bar, "_score_anim", None)
         if anim is not None:
             anim.stop()
@@ -996,6 +1018,92 @@ class ScoreboardWidget(QWidget):
         score_lbl: QLabel = bar._score_label  # type: ignore[attr-defined]
         if not score_lbl.isVisible():
             score_lbl.show()
+
+    def _animate_score_initial(
+        self, bar: QFrame, final_score: int, delay_ms: int = 0
+    ) -> None:
+        """Slot-machine roll-in animation for the first score load."""
+        self._cleanup_score_anim(bar)
+
+        score_label: QLabel = bar._score_label  # type: ignore[attr-defined]
+        lay = bar.layout()
+        if lay:
+            lay.activate()
+        bar.updateGeometry()
+
+        rect = score_label.geometry()
+        if rect.height() <= 0 or rect.width() <= 0:
+            sz = score_label.sizeHint()
+            rect = QRect(
+                score_label.pos(),
+                QSize(max(1, sz.width()), max(1, sz.height())),
+            )
+
+        style = score_label.styleSheet()
+        align = score_label.alignment()
+
+        roll_lbl = QLabel("-", bar)
+        roll_lbl.setStyleSheet(style)
+        roll_lbl.setAlignment(align)
+        roll_lbl.setFixedSize(rect.size())
+        roll_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        roll_lbl.move(rect.topLeft())
+        roll_lbl.show()
+        roll_lbl.raise_()
+
+        bar._anim_labels = [roll_lbl]  # type: ignore[attr-defined]
+        score_label.hide()
+
+        spread = max(10, final_score // 3)
+        cycle_vals = [
+            str(random.randint(max(0, final_score - spread), final_score + spread))
+            for _ in range(7)
+        ]
+        step_idx = [0]
+
+        def _tick() -> None:
+            i = step_idx[0]
+            if i < len(cycle_vals):
+                roll_lbl.setText(cycle_vals[i])
+                step_idx[0] += 1
+            else:
+                timer.stop()
+                bar._cycle_timer = None  # type: ignore[attr-defined]
+                _slide_final()
+
+        def _slide_final() -> None:
+            start_pos = rect.topLeft()
+            above = start_pos - QPoint(0, int(rect.height() * 0.5))
+
+            roll_lbl.setText(str(final_score))
+            roll_lbl.move(above)
+
+            slide = QPropertyAnimation(roll_lbl, b"pos", self)
+            slide.setDuration(300)
+            slide.setStartValue(above)
+            slide.setEndValue(start_pos)
+            slide.setEasingCurve(QEasingCurve.OutCubic)
+
+            def _done() -> None:
+                roll_lbl.setParent(None)
+                roll_lbl.deleteLater()
+                bar._anim_labels = []  # type: ignore[attr-defined]
+                score_label.setText(str(final_score))
+                score_label.show()
+
+            slide.finished.connect(_done)
+            bar._score_anim = slide  # type: ignore[attr-defined]
+            slide.start()
+
+        timer = QTimer(self)
+        timer.setInterval(45)
+        timer.timeout.connect(_tick)
+        bar._cycle_timer = timer  # type: ignore[attr-defined]
+
+        if delay_ms > 0:
+            QTimer.singleShot(delay_ms, timer.start)
+        else:
+            timer.start()
 
     def _animate_score_roll(
         self, bar: QFrame, old_score: int, delta: int, new_score: int

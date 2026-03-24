@@ -374,14 +374,17 @@ class ScoreboardWindow(QMainWindow):
 
     def _on_language_toggle(self) -> None:
         self._language = "zh" if self._language == "en" else "en"
+        self.score_widget.setUpdatesEnabled(False)
         self.score_widget.set_language(self._language)
-        if self._detail_window and self._detail_window.isVisible():
-            self._detail_window.hide_animated()
         if self.selected_game_id:
             for d in self._last_diffs:
                 if d.game.game_id == self.selected_game_id:
-                    self.score_widget.render_diff(d)
+                    self.score_widget.render_game(d.game)
                     break
+        self.score_widget.setUpdatesEnabled(True)
+        self.score_widget.update()
+        if self._detail_window and self._detail_window.isVisible():
+            self._detail_window.set_language(self._language)
 
     def _on_top_toggle(self) -> None:
         self.topmost = not self.topmost
