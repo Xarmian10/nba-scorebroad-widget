@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -283,7 +284,7 @@ class ScoreboardWindow(QMainWindow):
         self.score_widget.render_diff(chosen)
         self._sync_polling_state(chosen.game)
 
-        if player_stats and self.score_widget.is_expanded:
+        if self.score_widget.is_expanded:
             self.score_widget.set_player_stats(player_stats)
 
         if self.selected_game_id:
@@ -440,7 +441,10 @@ class ScoreboardWindow(QMainWindow):
 
     @staticmethod
     def _resolve_tray_icon() -> QIcon:
-        repo_root = Path(__file__).resolve().parents[3]
+        if getattr(sys, "frozen", False):
+            repo_root = Path(sys._MEIPASS)
+        else:
+            repo_root = Path(__file__).resolve().parents[3]
         icon_path = repo_root / "src" / "simple_circle_lakers_000.png"
         if icon_path.exists():
             return QIcon(str(icon_path))

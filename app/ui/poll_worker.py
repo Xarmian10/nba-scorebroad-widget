@@ -111,12 +111,19 @@ class PollWorker(QObject):
                         should_fetch = now - self._last_player_stats_fetch >= 10.0
                         all_stats: list[dict] = []
                         fetched_any = False
+                        tc_to_tid = {
+                            game.home.tricode.upper(): game.home.team_id,
+                            game.away.tricode.upper(): game.away.team_id,
+                        }
                         for tc in tricodes:
                             tc_cache_key = f"{game_id}:{tc}"
                             if not game.is_live and tc_cache_key in self._player_stats_cache:
                                 tc_stats = self._player_stats_cache[tc_cache_key]
                             elif should_fetch:
-                                tc_stats = service.fetch_player_stats(game_id, tc, is_live=game.is_live)
+                                tid = tc_to_tid.get(tc, 0)
+                                tc_stats = service.fetch_player_stats(
+                                    game_id, tc, is_live=game.is_live, team_id=tid,
+                                )
                                 fetched_any = True
                                 if tc_stats:
                                     self._player_stats_cache[tc_cache_key] = tc_stats

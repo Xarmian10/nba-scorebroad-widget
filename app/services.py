@@ -4,10 +4,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
+import requests as _requests
+
 from nba_api.live.nba.endpoints.scoreboard import ScoreBoard
 from nba_api.live.nba.endpoints.boxscore import BoxScore
 from nba_api.stats.endpoints.boxscoretraditionalv3 import BoxScoreTraditionalV3
 from nba_api.stats.endpoints.boxscoretraditionalv2 import BoxScoreTraditionalV2
+from nba_api.stats.endpoints.commonteamroster import CommonTeamRoster
 from nba_api.live.nba.endpoints.playbyplay import PlayByPlay
 
 from app.models import (
@@ -116,24 +119,34 @@ class ScoreboardService:
             log.debug("Fetch game clock failed: %s", exc)
             return ""
 
-    def fetch_player_stats(self, game_id: Optional[str], team_tricode: str, is_live: bool) -> list[dict]:
+    def fetch_player_stats(
+        self,
+        game_id: Optional[str],
+        team_tricode: str,
+        is_live: bool,
+        team_id: int = 0,
+    ) -> list[dict]:
         if not game_id or not team_tricode:
             return []
         try:
             team_tricode = team_tricode.upper()
             if is_live:
-                return self._fetch_live_player_stats(game_id, team_tricode)
-
-            results = self._fetch_traditional_stats_v3(game_id, team_tricode)
-            if results:
-                return results
-            results = self._fetch_traditional_stats_v2(game_id, team_tricode)
-            if results:
-                return results
-            return self._fetch_live_player_stats(game_id, team_tricode)
+                results = self._fetch_live_player_stats(game_id, team_tricode)
+                if results:
+                    return results
+            else:
+                for fn in (
+                    lambda: self._fetch_traditional_stats_v3(game_id, team_tricode),
+                    lambda: self._fetch_traditional_stats_v2(game_id, team_tricode),
+                    lambda: self._fetch_live_player_stats(game_id, team_tricode),
+                ):
+                    results = fn()
+                    if results:
+                        return results
         except Exception as exc:  # noqa: BLE001
             log.debug("Fetch player stats failed: %s", exc)
-            return []
+
+        return self._fetch_roster_fallback(game_id or "", team_id, team_tricode)
 
     def _fetch_live_player_stats(self, game_id: str, team_tricode: str) -> list[dict]:
         bs = BoxScore(game_id=game_id, proxy=self.proxy, headers=self.headers, timeout=self.timeout)
@@ -234,6 +247,106 @@ class ScoreboardService:
         except Exception as exc:  # noqa: BLE001
             log.debug("Fetch player stats v2 failed: %s", exc)
             return []
+
+    def _fetch_roster_fallback(self, game_id: str, team_id: int, team_tricode: str) -> list[dict]:
+        """Multi-level fallback to get team roster with zeroed stats."""
+        result = self._fetch_roster_via_cdn(game_id, team_tricode)
+        if result:
+            return result
+        result = self._fetch_roster_via_stats(team_id, team_tricode)
+        if result:
+            return result
+        return []
+
+    def _fetch_roster_via_cdn(self, game_id: str, team_tricode: str) -> list[dict]:
+        """Direct HTTP request to NBA CDN boxscore to extract roster."""
+        try:
+            url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+            resp = _requests.get(url, headers=self.headers, timeout=self.timeout)
+            if not resp.ok:
+                return []
+            data = resp.json()
+            game = data.get("game", {})
+            for key in ("homeTeam", "awayTeam"):
+                team = game.get(key, {})
+                if team.get("teamTricode", "").upper() != team_tricode.upper():
+                    continue
+                tid = team.get("teamId", 0)
+                players = team.get("players", []) or []
+                if not players:
+                    continue
+                results: list[dict] = []
+                for p in players:
+                    stats = p.get("statistics") or {}
+                    name = (
+                        p.get("name")
+                        or f"{p.get('firstName', '')} {p.get('familyName', '')}".strip()
+                        or p.get("nameI", "")
+                    )
+                    results.append({
+                        "name": name,
+                        "personId": p.get("personId", 0),
+                        "teamId": tid,
+                        "jerseyNum": str(p.get("jerseyNum", "")),
+                        "position": p.get("position", ""),
+                        "points": stats.get("points", 0) or 0,
+                        "assists": stats.get("assists", 0) or 0,
+                        "rebounds": stats.get("reboundsTotal", 0) or 0,
+                    })
+                results.sort(
+                    key=lambda item: (item["points"], item["assists"], item["rebounds"]),
+                    reverse=True,
+                )
+                return results
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Fetch roster via CDN failed: %s", exc)
+        return []
+
+    def _fetch_roster_via_stats(self, team_id: int, team_tricode: str) -> list[dict]:
+        """Try CommonTeamRoster from stats.nba.com (may be rate-limited)."""
+        try:
+            season = self._current_season()
+            roster = CommonTeamRoster(
+                team_id=team_id,
+                season=season,
+                proxy=self.proxy,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            rows = roster.common_team_roster.get_dict()
+            hdrs = rows.get("headers", [])
+            data = rows.get("data", [])
+            if not hdrs or not data:
+                return []
+            idx = {name: i for i, name in enumerate(hdrs)}
+            name_i = idx.get("PLAYER")
+            if name_i is None:
+                return []
+            pid_i = idx.get("PLAYER_ID")
+            num_i = idx.get("NUM")
+            pos_i = idx.get("POSITION")
+            results: list[dict] = []
+            for row in data:
+                results.append({
+                    "name": row[name_i] or "",
+                    "personId": row[pid_i] if pid_i is not None else 0,
+                    "teamId": team_id,
+                    "jerseyNum": str(row[num_i]) if num_i is not None else "",
+                    "position": str(row[pos_i]) if pos_i is not None else "",
+                    "points": 0,
+                    "assists": 0,
+                    "rebounds": 0,
+                })
+            return results
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Fetch roster via stats.nba.com failed: %s", exc)
+            return []
+
+    @staticmethod
+    def _current_season() -> str:
+        now = datetime.now()
+        year = now.year if now.month >= 10 else now.year - 1
+        return f"{year}-{(year + 1) % 100:02d}"
 
     def fetch_player_advanced_stats(self, game_id: str, player_id: int) -> dict:
         """Compute advanced stats from the live BoxScore endpoint."""

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Dict, Optional
 
 from PySide6.QtGui import QColor
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+if getattr(sys, "frozen", False):
+    ROOT_DIR = Path(sys._MEIPASS)
+else:
+    ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # 简易队色映射，可按需补充
 TEAM_COLORS: Dict[str, str] = {

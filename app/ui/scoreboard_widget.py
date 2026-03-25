@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import random
+
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import (
@@ -197,6 +197,8 @@ class ScoreboardWidget(QWidget):
         self._bubble_expand_anim: Optional[QParallelAnimationGroup] = None
         self._bubble_collapse_anim: Optional[QParallelAnimationGroup] = None
         self._player_label_map: dict[int, dict] = {}
+        self._bubble_stat_rows: dict[str, list[dict]] = {}
+        self._stats_fetch_attempted: bool = False
         self._build_ui()
         self._apply_theme_styles()
 
@@ -390,10 +392,14 @@ class ScoreboardWidget(QWidget):
         t = self._theme
         self._scorebug.setStyleSheet(
             f"QFrame#scorebug {{ background: {t['container_bg']}; "
-            f"border: 1px solid {t['container_border']}; }}"
+            f"border: 1px solid {t['container_border']}; "
+            "border-radius: 8px; }"
         )
         self._sep_line.setStyleSheet(f"background: {t['separator']};")
-        self._info_bar.setStyleSheet(f"background: {t['info_bar_bg']};")
+        self._info_bar.setStyleSheet(
+            f"background: {t['info_bar_bg']}; "
+            "border-bottom-left-radius: 7px; border-bottom-right-radius: 7px;"
+        )
         self.period_label.setStyleSheet(
             f"color: {t['text_primary']}; font-family: {self._font}; "
             "font-weight:700; font-size:12px; background:transparent;"
@@ -430,6 +436,9 @@ class ScoreboardWidget(QWidget):
             self._current_game = None
             self._reset_display()
             return
+
+        if self._current_game and self._current_game.game_id != game.game_id:
+            self._stats_fetch_attempted = False
 
         self._current_game = game
         self._set_team(self.away_bar, game.away, False)
@@ -611,10 +620,16 @@ class ScoreboardWidget(QWidget):
         score_lbl: QLabel = bar._score_label  # type: ignore[attr-defined]
         logo_lbl: QLabel = bar._logo_label  # type: ignore[attr-defined]
 
+        radius = (
+            "border-top-left-radius:7px; border-top-right-radius:7px;"
+            if not is_home
+            else ""
+        )
+
         if not team:
             name_lbl.setText("---")
             score_lbl.setText("-")
-            bar.setStyleSheet("background:#333; border:none;")
+            bar.setStyleSheet(f"background:#333; border:none; {radius}")
             name_lbl.setStyleSheet(
                 f"color:#666; font-family:{self._font}; font-weight:800; "
                 "font-size:18px; background:transparent;"
@@ -631,7 +646,7 @@ class ScoreboardWidget(QWidget):
         display = team_display_name(team.tricode, self._language)
         name_text = display or ("HOME" if is_home else "AWAY")
         if self._timeout_team_tricode and team.tricode.upper() == self._timeout_team_tricode:
-            name_text = f"\u23f1 {name_text}"
+            name_text = f"{name_text} \u23f1"
         name_lbl.setTextFormat(Qt.PlainText)
         name_lbl.setText(name_text)
         bar._team_tricode = team.tricode.upper()  # type: ignore[attr-defined]
@@ -648,7 +663,7 @@ class ScoreboardWidget(QWidget):
             bg = team_color(team.tricode)
 
         txt = _contrast_text(bg)
-        bar.setStyleSheet(f"background:{bg.name()}; border:none;")
+        bar.setStyleSheet(f"background:{bg.name()}; border:none; {radius}")
         name_lbl.setStyleSheet(
             f"color:{txt}; font-family:{self._font}; font-weight:800; "
             "font-size:18px; background:transparent;"
@@ -794,6 +809,7 @@ class ScoreboardWidget(QWidget):
         if lay is None:
             return
         self._clear_layout(lay)
+        self._bubble_stat_rows.pop(bubble.objectName(), None)
         t = self._theme
         ph = QLabel("加载中..." if self._language == "zh" else "Loading...")
         ph.setStyleSheet(
@@ -882,13 +898,136 @@ class ScoreboardWidget(QWidget):
         if not self._expanded:
             return
 
-        self._player_label_map.clear()
+        self._stats_fetch_attempted = True
+
         away_stats = [s for s in stats if s.get("team", "").upper() == self._away_tricode]
         home_stats = [s for s in stats if s.get("team", "").upper() == self._home_tricode]
 
-        self._fill_stats_bubble(self._bubble_away, self._away_tricode, away_stats)
-        self._fill_stats_bubble(self._bubble_home, self._home_tricode, home_stats)
+        away_key = self._bubble_away.objectName()
+        home_key = self._bubble_home.objectName()
+
+        if away_key in self._bubble_stat_rows and self._try_incremental_update(
+            self._bubble_away, away_stats
+        ):
+            pass
+        else:
+            self._player_label_map = {
+                k: v for k, v in self._player_label_map.items()
+                if v.get("teamTricode", "").upper() != self._away_tricode
+            }
+            self._fill_stats_bubble(self._bubble_away, self._away_tricode, away_stats)
+
+        if home_key in self._bubble_stat_rows and self._try_incremental_update(
+            self._bubble_home, home_stats
+        ):
+            pass
+        else:
+            self._player_label_map = {
+                k: v for k, v in self._player_label_map.items()
+                if v.get("teamTricode", "").upper() != self._home_tricode
+            }
+            self._fill_stats_bubble(self._bubble_home, self._home_tricode, home_stats)
+
         self.layout_changed.emit()
+
+    def _try_incremental_update(
+        self, bubble: _BubbleFrame, players: list[dict]
+    ) -> bool:
+        key = bubble.objectName()
+        rows = self._bubble_stat_rows.get(key, [])
+        if not rows or not players:
+            return False
+        old_names = [r["name"] for r in rows]
+        new_names = [p.get("name", "") for p in players]
+        if old_names != new_names:
+            return False
+
+        delay = 0
+        for row_info, player in zip(rows, players):
+            for stat_key, lbl_key in [("points", "pts_lbl"), ("assists", "ast_lbl"), ("rebounds", "reb_lbl")]:
+                new_val = player.get(stat_key, 0)
+                old_val = row_info.get(f"old_{stat_key}", 0)
+                lbl: QLabel = row_info[lbl_key]
+                if new_val != old_val:
+                    self._animate_stat_value(lbl, old_val, new_val, delay)
+                    row_info[f"old_{stat_key}"] = new_val
+                    delay += 30
+            player_info = dict(player)
+            player_info["teamTricode"] = row_info.get("tricode", "")
+            nm_lbl = row_info.get("name_lbl")
+            if nm_lbl:
+                self._player_label_map[id(nm_lbl)] = player_info
+        return True
+
+    def _animate_stat_value(
+        self, lbl: QLabel, old_val: int, new_val: int, delay_ms: int = 0
+    ) -> None:
+        parent = lbl.parentWidget()
+        if not parent:
+            lbl.setText(str(new_val))
+            return
+
+        style = lbl.styleSheet()
+        align = lbl.alignment()
+        geo = lbl.geometry()
+        if geo.height() <= 0 or geo.width() <= 0:
+            lbl.setText(str(new_val))
+            return
+
+        old_lbl = QLabel(str(old_val), parent)
+        old_lbl.setStyleSheet(style)
+        old_lbl.setAlignment(align)
+        old_lbl.setFixedSize(geo.size())
+        old_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        new_lbl = QLabel(str(new_val), parent)
+        new_lbl.setStyleSheet(style)
+        new_lbl.setAlignment(align)
+        new_lbl.setFixedSize(geo.size())
+        new_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        start_pos = geo.topLeft()
+        above = start_pos - QPoint(0, geo.height())
+        below = start_pos + QPoint(0, geo.height())
+
+        old_lbl.move(start_pos)
+        new_lbl.move(above)
+        old_lbl.show()
+        old_lbl.raise_()
+        new_lbl.show()
+        new_lbl.raise_()
+        lbl.hide()
+
+        def _run():
+            a_out = QPropertyAnimation(old_lbl, b"pos", self)
+            a_out.setDuration(350)
+            a_out.setStartValue(start_pos)
+            a_out.setEndValue(below)
+            a_out.setEasingCurve(QEasingCurve.InCubic)
+
+            a_in = QPropertyAnimation(new_lbl, b"pos", self)
+            a_in.setDuration(350)
+            a_in.setStartValue(above)
+            a_in.setEndValue(start_pos)
+            a_in.setEasingCurve(QEasingCurve.OutCubic)
+
+            group = QParallelAnimationGroup(self)
+            group.addAnimation(a_out)
+            group.addAnimation(a_in)
+
+            def _done():
+                old_lbl.setParent(None)
+                old_lbl.deleteLater()
+                new_lbl.setParent(None)
+                new_lbl.deleteLater()
+                lbl.setText(str(new_val))
+                lbl.show()
+
+            group.finished.connect(_done)
+            group.start()
+
+        total_delay = max(50, delay_ms)
+        QTimer.singleShot(total_delay, _run)
 
     def _fill_stats_bubble(
         self, bubble: _BubbleFrame, tricode: str, players: list[dict]
@@ -897,6 +1036,9 @@ class ScoreboardWidget(QWidget):
         if lay is None:
             return
         self._clear_layout(lay)
+
+        bubble_key = bubble.objectName()
+        self._bubble_stat_rows.pop(bubble_key, None)
 
         tc = team_color(tricode)
         pal = _team_palette(tc)
@@ -908,7 +1050,6 @@ class ScoreboardWidget(QWidget):
         )
 
         is_zh = self._language == "zh"
-        loading_text = "加载中..." if is_zh else "Loading..."
 
         if not players:
             header = QLabel(display)
@@ -917,7 +1058,11 @@ class ScoreboardWidget(QWidget):
                 "font-size:13px; background:transparent; border:none;"
             )
             lay.addWidget(header)
-            ph = QLabel(loading_text)
+            if self._stats_fetch_attempted:
+                placeholder = "比赛未开始" if is_zh else "Not Started"
+            else:
+                placeholder = "加载中..." if is_zh else "Loading..."
+            ph = QLabel(placeholder)
             ph.setStyleSheet(
                 f"color:{pal['txt_sub']}; font-size:10px; "
                 "background:transparent; border:none;"
@@ -953,6 +1098,8 @@ class ScoreboardWidget(QWidget):
             ch_lay.addWidget(lbl, 0, ci)
         lay.addWidget(col_hdr)
 
+        row_tracking: list[dict] = []
+
         for pi, player in enumerate(players):
             row_w = QWidget()
             row_w.setStyleSheet("background:transparent; border:none;")
@@ -986,18 +1133,41 @@ class ScoreboardWidget(QWidget):
             )
             r_lay.addWidget(pts_lbl, 0, 1)
 
-            for ci, key in enumerate(["assists", "rebounds"], start=2):
-                val = QLabel(str(player.get(key, 0)))
-                val.setFixedWidth(28)
-                val.setAlignment(Qt.AlignCenter)
-                val.setStyleSheet(
-                    f"color:{pal['txt_dim']}; font-family:{self._font}; "
-                    f"font-size:10px; "
-                    f"background:{row_bg}; border:none; padding:1px 0;"
-                )
-                r_lay.addWidget(val, 0, ci)
+            ast_lbl = QLabel(str(player.get("assists", 0)))
+            ast_lbl.setFixedWidth(28)
+            ast_lbl.setAlignment(Qt.AlignCenter)
+            ast_lbl.setStyleSheet(
+                f"color:{pal['txt_dim']}; font-family:{self._font}; "
+                f"font-size:10px; "
+                f"background:{row_bg}; border:none; padding:1px 0;"
+            )
+            r_lay.addWidget(ast_lbl, 0, 2)
+
+            reb_lbl = QLabel(str(player.get("rebounds", 0)))
+            reb_lbl.setFixedWidth(28)
+            reb_lbl.setAlignment(Qt.AlignCenter)
+            reb_lbl.setStyleSheet(
+                f"color:{pal['txt_dim']}; font-family:{self._font}; "
+                f"font-size:10px; "
+                f"background:{row_bg}; border:none; padding:1px 0;"
+            )
+            r_lay.addWidget(reb_lbl, 0, 3)
 
             lay.addWidget(row_w)
+
+            row_tracking.append({
+                "name": player.get("name", ""),
+                "tricode": tricode,
+                "name_lbl": nm,
+                "pts_lbl": pts_lbl,
+                "ast_lbl": ast_lbl,
+                "reb_lbl": reb_lbl,
+                "old_points": player.get("points", 0),
+                "old_assists": player.get("assists", 0),
+                "old_rebounds": player.get("rebounds", 0),
+            })
+
+        self._bubble_stat_rows[bubble_key] = row_tracking
 
     # ── Score roll animation ──────────────────────────────────
 
@@ -1022,7 +1192,7 @@ class ScoreboardWidget(QWidget):
     def _animate_score_initial(
         self, bar: QFrame, final_score: int, delay_ms: int = 0
     ) -> None:
-        """Slot-machine roll-in animation for the first score load."""
+        """Smooth slide-in animation for the first score load."""
         self._cleanup_score_anim(bar)
 
         score_label: QLabel = bar._score_label  # type: ignore[attr-defined]
@@ -1041,52 +1211,31 @@ class ScoreboardWidget(QWidget):
 
         style = score_label.styleSheet()
         align = score_label.alignment()
+        start_pos = rect.topLeft()
+        above = start_pos - QPoint(0, int(rect.height() * 0.6))
 
-        roll_lbl = QLabel("-", bar)
-        roll_lbl.setStyleSheet(style)
-        roll_lbl.setAlignment(align)
-        roll_lbl.setFixedSize(rect.size())
-        roll_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        roll_lbl.move(rect.topLeft())
-        roll_lbl.show()
-        roll_lbl.raise_()
+        new_lbl = QLabel(str(final_score), bar)
+        new_lbl.setStyleSheet(style)
+        new_lbl.setAlignment(align)
+        new_lbl.setFixedSize(rect.size())
+        new_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        new_lbl.move(above)
+        new_lbl.show()
+        new_lbl.raise_()
 
-        bar._anim_labels = [roll_lbl]  # type: ignore[attr-defined]
+        bar._anim_labels = [new_lbl]  # type: ignore[attr-defined]
         score_label.hide()
 
-        spread = max(10, final_score // 3)
-        cycle_vals = [
-            str(random.randint(max(0, final_score - spread), final_score + spread))
-            for _ in range(7)
-        ]
-        step_idx = [0]
-
-        def _tick() -> None:
-            i = step_idx[0]
-            if i < len(cycle_vals):
-                roll_lbl.setText(cycle_vals[i])
-                step_idx[0] += 1
-            else:
-                timer.stop()
-                bar._cycle_timer = None  # type: ignore[attr-defined]
-                _slide_final()
-
-        def _slide_final() -> None:
-            start_pos = rect.topLeft()
-            above = start_pos - QPoint(0, int(rect.height() * 0.5))
-
-            roll_lbl.setText(str(final_score))
-            roll_lbl.move(above)
-
-            slide = QPropertyAnimation(roll_lbl, b"pos", self)
-            slide.setDuration(300)
+        def _run() -> None:
+            slide = QPropertyAnimation(new_lbl, b"pos", self)
+            slide.setDuration(500)
             slide.setStartValue(above)
             slide.setEndValue(start_pos)
-            slide.setEasingCurve(QEasingCurve.OutCubic)
+            slide.setEasingCurve(QEasingCurve.OutQuart)
 
             def _done() -> None:
-                roll_lbl.setParent(None)
-                roll_lbl.deleteLater()
+                new_lbl.setParent(None)
+                new_lbl.deleteLater()
                 bar._anim_labels = []  # type: ignore[attr-defined]
                 score_label.setText(str(final_score))
                 score_label.show()
@@ -1095,15 +1244,8 @@ class ScoreboardWidget(QWidget):
             bar._score_anim = slide  # type: ignore[attr-defined]
             slide.start()
 
-        timer = QTimer(self)
-        timer.setInterval(45)
-        timer.timeout.connect(_tick)
-        bar._cycle_timer = timer  # type: ignore[attr-defined]
-
-        if delay_ms > 0:
-            QTimer.singleShot(delay_ms, timer.start)
-        else:
-            timer.start()
+        total_delay = max(50, delay_ms)
+        QTimer.singleShot(total_delay, _run)
 
     def _animate_score_roll(
         self, bar: QFrame, old_score: int, delta: int, new_score: int
@@ -1126,85 +1268,105 @@ class ScoreboardWidget(QWidget):
 
         style = score_label.styleSheet()
         align = score_label.alignment()
-
-        def _mk(text: str) -> QLabel:
-            lbl = QLabel(text, bar)
-            lbl.setStyleSheet(style)
-            lbl.setAlignment(align)
-            lbl.setFixedSize(rect.size())
-            lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            lbl.show()
-            lbl.raise_()
-            return lbl
-
-        old_lbl = _mk(str(old_score))
-        delta_lbl = _mk(f"+{delta}")
-        delta_lbl.setStyleSheet(
-            f"color:{self._theme['delta_color']}; font-family:{self._font}; "
-            "font-weight:900; font-size:24px; background:transparent;"
-        )
-        new_lbl = _mk(str(new_score))
-        bar._anim_labels = [old_lbl, delta_lbl, new_lbl]  # type: ignore[attr-defined]
-
         start = rect.topLeft()
-        up = start - QPoint(0, rect.height())
-        down = start + QPoint(0, rect.height())
+        slide_dist = bar.height()
+        up = start - QPoint(0, slide_dist)
+        down = start + QPoint(0, slide_dist)
 
+        old_lbl = QLabel(str(old_score), bar)
+        old_lbl.setStyleSheet(style)
+        old_lbl.setAlignment(align)
+        old_lbl.setFixedSize(rect.size())
+        old_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         old_lbl.move(start)
+        old_lbl.show()
+        old_lbl.raise_()
+
+        delta_lbl = QLabel(f"+{delta}", bar)
+        delta_lbl.setStyleSheet(style)
+        delta_lbl.setAlignment(align)
+        delta_lbl.setFixedSize(rect.size())
+        delta_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         delta_lbl.move(up)
+        delta_lbl.show()
+        delta_lbl.raise_()
+
+        new_lbl = QLabel(str(new_score), bar)
+        new_lbl.setStyleSheet(style)
+        new_lbl.setAlignment(align)
+        new_lbl.setFixedSize(rect.size())
+        new_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         new_lbl.move(up)
+        new_lbl.hide()
+
+        bar._anim_labels = [old_lbl, delta_lbl, new_lbl]  # type: ignore[attr-defined]
         score_label.hide()
 
-        a_old = QPropertyAnimation(old_lbl, b"pos", self)
-        a_old.setDuration(280)
-        a_old.setStartValue(start)
-        a_old.setEndValue(down)
-        a_old.setEasingCurve(QEasingCurve.InQuad)
+        def _phase1() -> None:
+            a_old = QPropertyAnimation(old_lbl, b"pos", self)
+            a_old.setDuration(450)
+            a_old.setStartValue(start)
+            a_old.setEndValue(down)
+            a_old.setEasingCurve(QEasingCurve.InCubic)
 
-        a_din = QPropertyAnimation(delta_lbl, b"pos", self)
-        a_din.setDuration(280)
-        a_din.setStartValue(up)
-        a_din.setEndValue(start)
-        a_din.setEasingCurve(QEasingCurve.OutCubic)
+            a_din = QPropertyAnimation(delta_lbl, b"pos", self)
+            a_din.setDuration(450)
+            a_din.setStartValue(up)
+            a_din.setEndValue(start)
+            a_din.setEasingCurve(QEasingCurve.OutQuart)
 
-        hold = QPauseAnimation(900, self)
+            phase_in = QParallelAnimationGroup(self)
+            phase_in.addAnimation(a_old)
+            phase_in.addAnimation(a_din)
 
-        a_dout = QPropertyAnimation(delta_lbl, b"pos", self)
-        a_dout.setDuration(280)
-        a_dout.setStartValue(start)
-        a_dout.setEndValue(down)
-        a_dout.setEasingCurve(QEasingCurve.InQuad)
+            def _on_phase1_done() -> None:
+                old_lbl.hide()
+                bar._score_anim = None  # type: ignore[attr-defined]
+                QTimer.singleShot(5000, _phase2)
 
-        a_new = QPropertyAnimation(new_lbl, b"pos", self)
-        a_new.setDuration(280)
-        a_new.setStartValue(up)
-        a_new.setEndValue(start)
-        a_new.setEasingCurve(QEasingCurve.OutCubic)
+            phase_in.finished.connect(_on_phase1_done)
+            bar._score_anim = phase_in  # type: ignore[attr-defined]
+            phase_in.start()
 
-        phase_in = QParallelAnimationGroup(self)
-        phase_in.addAnimation(a_old)
-        phase_in.addAnimation(a_din)
+        def _phase2() -> None:
+            if not bar.isVisible():
+                _final_cleanup()
+                return
 
-        phase_out = QParallelAnimationGroup(self)
-        phase_out.addAnimation(a_dout)
-        phase_out.addAnimation(a_new)
+            new_lbl.move(up)
+            new_lbl.show()
+            new_lbl.raise_()
 
-        seq = QSequentialAnimationGroup(self)
-        seq.addAnimation(phase_in)
-        seq.addAnimation(hold)
-        seq.addAnimation(phase_out)
+            a_dout = QPropertyAnimation(delta_lbl, b"pos", self)
+            a_dout.setDuration(450)
+            a_dout.setStartValue(start)
+            a_dout.setEndValue(down)
+            a_dout.setEasingCurve(QEasingCurve.InCubic)
 
-        def _cleanup() -> None:
+            a_new = QPropertyAnimation(new_lbl, b"pos", self)
+            a_new.setDuration(450)
+            a_new.setStartValue(up)
+            a_new.setEndValue(start)
+            a_new.setEasingCurve(QEasingCurve.OutQuart)
+
+            phase_out = QParallelAnimationGroup(self)
+            phase_out.addAnimation(a_dout)
+            phase_out.addAnimation(a_new)
+            phase_out.finished.connect(_final_cleanup)
+            bar._score_anim = phase_out  # type: ignore[attr-defined]
+            phase_out.start()
+
+        def _final_cleanup() -> None:
             for lbl in [old_lbl, delta_lbl, new_lbl]:
+                lbl.hide()
                 lbl.setParent(None)
                 lbl.deleteLater()
             bar._anim_labels = []  # type: ignore[attr-defined]
+            bar._score_anim = None  # type: ignore[attr-defined]
             score_label.setText(str(new_score))
             score_label.show()
 
-        seq.finished.connect(_cleanup)
-        bar._score_anim = seq  # type: ignore[attr-defined]
-        seq.start()
+        QTimer.singleShot(50, _phase1)
 
     # ── Public helpers ────────────────────────────────────────
 
