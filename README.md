@@ -1,4 +1,4 @@
-# NBA Scoreboard Widget
+# NBA Scoreboard Widget / NBA得分栏
 
 ESPN/TNT 风格的桌面 NBA 实时记分牌小组件，基于 PySide6 (Qt 6) 构建。
 
